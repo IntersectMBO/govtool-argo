@@ -25,6 +25,9 @@ spec:
         app.kubernetes.io/name: {{ include "govtool.name" $ }}
         app.kubernetes.io/component: {{ $name }}
     spec:
+      # No service needs the Kubernetes API, and the token's mount under
+      # /run/secrets would collide with secretMounts there.
+      automountServiceAccountToken: false
       {{- with $svc.nodeSelector }}
       nodeSelector:
 {{ toYaml . | indent 8 }}
