@@ -10,7 +10,7 @@ GovTool is deployed to a multi-node Kubernetes cluster using:
 - Argo CD for GitOps-based deployment and synchronization
 - Kubernetes Ingress for routing traffic
 - Kubernetes Secrets for runtime configuration
-- A PostgreSQL instance for the PDF/proposal pillar service
+- A PostgreSQL instance for the metadata service and the proposal discussion forum
 
 ## Architecture
 
@@ -27,13 +27,18 @@ GitHub Repository
 The following GovTool services are deployed in the `govtool` namespace:
 
 ```txt
-govtool-frontend
-govtool-backend
-govtool-metadata
-govtool-outcomes
-govtool-pdf
-govtool-pdf-db
+govtool-frontend   ghcr.io/intersectmbo/govtool-frontend
+govtool-backend    ghcr.io/intersectmbo/govtool-backend (/api, /swagger-ui)
+govtool-metadata   ghcr.io/intersectmbo/govtool-metadata-service (internal only)
+govtool-pdf        ghcr.io/intersectmbo/govtool-pdf-backend (/pdf)
+govtool-postgres   postgres:16-alpine, metadata and pdf databases
 ```
+
+These are GovTool v3's services, the same as docker/swarm-stack/docker-stack.yml
+in IntersectMBO/govtool; the four app images share one tag. The old
+metadata-validation, outcomes and Strapi (proposal pillar) services are gone.
+The Secrets the chart reads (govtool-v3-app, govtool-v3-db) are listed at the
+top of values.yaml and are created in the namespace out of band.
 
 ## Ingress
 
@@ -57,8 +62,7 @@ The Helm chart defines:
 - Ingress
 - Runtime environment variables
 - Secret/config mounts
-- PDF database volume mount
-- Optional PDF database migration Job
+- The postgres volume mount and its init script (files/postgres-init.sh)
 
 ### Render Locally
 
@@ -79,140 +83,49 @@ helm upgrade --install govtool . -n govtool --create-namespace
 ```
 
 ## Required Secrets
-Required secrets:
+
+Two Secrets in the namespace, created before the first sync:
 
 ```txt
-govtool-backend-config
-govtool-outcomes-db
-govtool-pdf-db
-govtool-pdf-env
+govtool-v3-app  GOVTOOL_DBSYNC_PASSWORD, METADATA_DATABASE_URL,
+                PDF_DATABASE_URL, PDF_JWT_SECRET, PDF_REFRESH_SECRET
+govtool-v3-db   postgres_password, metadata_db_password, pdf_db_password
 ```
 
-### Backend Config Secret
-
-The backend reads its configuration from:
-
-```txt
-/run/secrets/config.json
-```
-
-Example creation:
+The database URLs use the role passwords from govtool-v3-db:
+postgresql://metadata:<metadata_db_password>@govtool-postgres:5432/metadata and
+postgresql://pdf:<pdf_db_password>@govtool-postgres:5432/pdf?schema=public.
+The JWT and refresh secrets are at least 32 characters each and differ.
 
 ```bash
-kubectl create secret generic govtool-backend-config \
-  -n govtool \
-  --from-literal=config.json='{
-    "dbsyncconfig": {
-      "host": "DB_HOST",
-      "dbname": "DB_NAME",
-      "user": "DB_USER",
-      "password": "DB_PASSWORD",
-      "port": 5432
-    },
-    "port": 9876,
-    "host": "0.0.0.0",
-    "cachedurationseconds": 20,
-    "sentrydsn": "",
-    "sentryenv": ""
-  }'
+kubectl create secret generic govtool-v3-db -n govtool \
+  --from-literal=postgres_password="$POSTGRES_PASSWORD" \
+  --from-literal=metadata_db_password="$METADATA_DB_PASSWORD" \
+  --from-literal=pdf_db_password="$PDF_DB_PASSWORD"
+
+kubectl create secret generic govtool-v3-app -n govtool \
+  --from-literal=GOVTOOL_DBSYNC_PASSWORD="$DBSYNC_PASSWORD" \
+  --from-literal=METADATA_DATABASE_URL="postgresql://metadata:$METADATA_DB_PASSWORD@govtool-postgres:5432/metadata" \
+  --from-literal=PDF_DATABASE_URL="postgresql://pdf:$PDF_DB_PASSWORD@govtool-postgres:5432/pdf?schema=public" \
+  --from-literal=PDF_JWT_SECRET="$PDF_JWT_SECRET" \
+  --from-literal=PDF_REFRESH_SECRET="$PDF_REFRESH_SECRET"
 ```
 
-### Outcomes DB Secret
+## Database
 
-```bash
-kubectl create secret generic govtool-outcomes-db \
-  -n govtool \
-  --from-literal=DATABASE_HOST='DB_HOST' \
-  --from-literal=DATABASE_PORT='5432' \
-  --from-literal=DATABASE_NAME='DB_NAME' \
-  --from-literal=DATABASE_USER='DB_USER' \
-  --from-literal=DATABASE_PASSWORD='DB_PASSWORD'
-```
+`govtool-postgres` holds the metadata and pdf databases. On an empty data
+directory files/postgres-init.sh creates one role and database per app; the
+roles keep the password they were created with, so changing one later needs
+ALTER ROLE as well as the Secret. The metadata service and the forum backend
+migrate their databases on start.
 
-### PDF DB Secret
-
-```bash
-kubectl create secret generic govtool-pdf-db \
-  -n govtool \
-  --from-literal=POSTGRES_DB='postgres' \
-  --from-literal=POSTGRES_USER='postgres' \
-  --from-literal=POSTGRES_PASSWORD='POSTGRES_PASSWORD'
-```
-
-### PDF App Secret
-
-```bash
-kubectl create secret generic govtool-pdf-env \
-  -n govtool \
-  --from-literal=DATABASE_USERNAME='postgres' \
-  --from-literal=DATABASE_PASSWORD='POSTGRES_PASSWORD' \
-  --from-literal=APP_KEYS='APP_KEYS' \
-  --from-literal=API_TOKEN_SALT='API_TOKEN_SALT' \
-  --from-literal=ADMIN_JWT_SECRET='ADMIN_JWT_SECRET' \
-  --from-literal=TRANSFER_TOKEN_SALT='TRANSFER_TOKEN_SALT' \
-  --from-literal=JWT_SECRET='JWT_SECRET' \
-  --from-literal=REFRESH_SECRET='REFRESH_SECRET' \
-  --from-literal=POSTGRESQL_REPLICATION_USE_PASSFILE='false'
-```
-
-## PDF Database
-
-`govtool-pdf-db` runs PostgreSQL for the PDF/proposal pillar service.
-
-### Storage
-
-The PDF database uses a `hostPath` mount on a selected worker node.
-
-```txt
-Pod mount path: /var/lib/postgresql/data
-Node host path: /var/lib/govtool/pdf-postgres
-```
-
-### Node Pinning
-
-The PDF DB pod is pinned to a worker node using a node label.
+The data is a `hostPath` on the node labelled `govtool-pdf-db=true`
+(/var/lib/govtool/v3-postgres; PR previews use their own path), and the
+Deployment uses the Recreate strategy so two Postgres processes never share it.
 
 ```bash
 kubectl label node k8s-govtool-worker-1 govtool-pdf-db=true
 ```
-
-The Helm values use:
-
-```yaml
-nodeSelector:
-  govtool-pdf-db: "true"
-```
-
-## PDF DB Migration
-
-The PDF DB migration is handled by a Kubernetes Job managed through Argo CD.
-
-### Resources
-
-```txt
-Job: govtool-pdf-db-migration
-ConfigMap: govtool-pdf-db-migration
-```
-
-The migration Job mounts `schema.sql` from the ConfigMap and applies it to `govtool-pdf-db`.
-
-### Enable Migration
-
-```yaml
-pdfDbMigration:
-  enabled: true
-```
-
-### Disable Migration
-
-After the migration succeeds, disable it again:
-
-```yaml
-pdfDbMigration:
-  enabled: false
-```
-
-This prevents the migration Job from running again on every Argo sync.
 
 ### Check Application
 

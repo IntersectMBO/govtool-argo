@@ -2,17 +2,14 @@ global:
   namespace: govtool
   imagePullPolicy: IfNotPresent
 
-pdfDbMigration:
-    enabled: false
-    configMapName: govtool-pdf-db-migration
-    fileName: schema.sql
-    dbHost: govtool-pdf-db
-    dbName: postgres
-    dbUserSecret: govtool-pdf-db
-
-backendConfig:
-  enabled: true
-  secretName: govtool-backend-config
+# GovTool v3: the same services as docker/swarm-stack/docker-stack.yml in
+# IntersectMBO/govtool. All four app images share one tag.
+#
+# Secrets, created in the namespace out of band (never in git):
+#   govtool-v3-app: GOVTOOL_DBSYNC_PASSWORD, METADATA_DATABASE_URL,
+#     PDF_DATABASE_URL, PDF_JWT_SECRET, PDF_REFRESH_SECRET
+#   govtool-v3-db: postgres_password, metadata_db_password, pdf_db_password
+#     (files read by postgres and files/postgres-init.sh)
 
 services:
   backend:
@@ -20,78 +17,158 @@ services:
     replicaCount: 1
     image:
       repository: ghcr.io/intersectmbo/govtool-backend
-      tag: ff5e43c1d69eac920607d325c7965d5dadc68cc3
-    containerPort: 9876
+      tag: 61d5d1c73b04f0bbed31df932df81f8e0fe5d013
+    containerPort: 9999
     servicePort: 80
-    command:
-      - /usr/local/bin/vva-be
-    args:
-      - -c
-      - /run/secrets/config.json
-      - start-app
-    configMount:
-      enabled: true
-      secretName: govtool-backend-config
-      mountPath: /run/secrets/config.json
-      subPath: config.json
+    command: ["node", "dist/main.js"]
+    env:
+      GOVTOOL_PORT: "9999"
+      GOVTOOL_HOST: "0.0.0.0"
+      GOVTOOL_CHAIN_DATA_PROVIDER: dbsync
+      GOVTOOL_DBSYNC_HOST: "172.31.0.3"
+      GOVTOOL_DBSYNC_PORT: "8433"
+      GOVTOOL_DBSYNC_DATABASE: dbsync_preview_13_7_0_5
+      GOVTOOL_DBSYNC_USER: preview_reader
+      # Must match the database, or every route answers 500.
+      GOVTOOL_DBSYNC_NETWORK: preview
+      GOVTOOL_METADATA_SERVICE_URL: http://govtool-metadata
+      GOVTOOL_PDF_API_URL: http://govtool-pdf/api
+      GOVTOOL_SENTRY_ENV: test
+      IPFS_GATEWAY: "https://ipfs.io/ipfs"
+    secretEnv:
+      - name: GOVTOOL_DBSYNC_PASSWORD
+        secret: govtool-v3-app
+        key: GOVTOOL_DBSYNC_PASSWORD
+    # On first start the cache warmer reads a full DRep and proposal snapshot
+    # before the backend listens.
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: http
+      periodSeconds: 15
+      failureThreshold: 3
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
 
   frontend:
     enabled: true
     replicaCount: 1
     image:
       repository: ghcr.io/intersectmbo/govtool-frontend
-      tag: ff5e43c1d69eac920607d325c7965d5dadc68cc3
+      tag: 61d5d1c73b04f0bbed31df932df81f8e0fe5d013
     containerPort: 80
     servicePort: 80
+    # Read at container start into window.__ENV__.
     env:
-      VIRTUAL_HOST: "https://localhost"
-      VITE_BASE_URL: "/api"
-      VITE_METADATA_API_URL: "/api/metadata"
-      VITE_APP_ENV: "test"
+      VITE_APP_ENV: test
+      VITE_BASE_URL: "https://k8s.dev.gov.tools/api"
+      # 0 testnet, 1 mainnet.
       VITE_NETWORK_FLAG: "0"
       VITE_IS_PROPOSAL_DISCUSSION_FORUM_ENABLED: "true"
-      VITE_IS_GOVERNANCE_OUTCOMES_PILLAR_ENABLED: "true"
+      VITE_IS_CIP179_ENABLED: "true"
+      VITE_PDF_API_URL: "https://k8s.dev.gov.tools/pdf"
       VITE_IPFS_GATEWAY: "https://ipfs.io/ipfs"
-      VITE_PDF_API_URL: "/api/pdf"
-      VITE_OUTCOMES_API_URL: "/api/outcomes"
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
 
+  # Resolves anchors for the backend: caches by hash, fails over across IPFS
+  # gateways and refuses private addresses. Internal only: no ingress path.
   metadata:
     enabled: true
     replicaCount: 1
     image:
-      repository: ghcr.io/intersectmbo/govtool-metadata-validation
-      tag: ff5e43c1d69eac920607d325c7965d5dadc68cc3
+      repository: ghcr.io/intersectmbo/govtool-metadata-service
+      tag: 61d5d1c73b04f0bbed31df932df81f8e0fe5d013
     containerPort: 3000
     servicePort: 80
     env:
+      NODE_ENV: production
       PORT: "3000"
-      IPFS_GATEWAY: "https://ipfs.io/ipfs"
-      IPFS_PROJECT_ID: ""
+    secretEnv:
+      - name: DATABASE_URL
+        secret: govtool-v3-app
+        key: METADATA_DATABASE_URL
+    readinessProbe:
+      httpGet:
+        path: /api/health
+        port: http
+      periodSeconds: 15
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
 
-  outcomes:
+  # The proposal discussion forum backend; migrates and seeds on start.
+  pdf:
     enabled: true
     replicaCount: 1
     image:
-      repository: ghcr.io/intersectmbo/govtool-outcomes-pillar-backend
-      tag: acf1032dae36691f8bc6af2b8e90a9b7917a557e-91
-    containerPort: 3000
+      repository: ghcr.io/intersectmbo/govtool-pdf-backend
+      tag: 61d5d1c73b04f0bbed31df932df81f8e0fe5d013
+    containerPort: 1337
     servicePort: 80
     env:
-      IPFS_GATEWAY: "https://ipfs.io/ipfs"
-      PDF_API_URL: "/api/pdf"
-    envFromSecrets:
-      - govtool-outcomes-db
+      NODE_ENV: production
+      HOST: "0.0.0.0"
+      PORT: "1337"
+      CORS_ORIGINS: "https://k8s.dev.gov.tools"
+      REFRESH_COOKIE_SAMESITE: lax
+      REFRESH_COOKIE_SECURE: "true"
+      # 0 testnet, 1 mainnet: wallets of the other network cannot sign in.
+      CARDANO_NETWORK_ID: "0"
+      GOVTOOL_API_BASE_URL: http://govtool-backend
+      IPFS_GATEWAY_URL: "https://ipfs.io/ipfs"
+    secretEnv:
+      - name: DATABASE_URL
+        secret: govtool-v3-app
+        key: PDF_DATABASE_URL
+      - name: JWT_SECRET
+        secret: govtool-v3-app
+        key: PDF_JWT_SECRET
+      - name: REFRESH_SECRET
+        secret: govtool-v3-app
+        key: PDF_REFRESH_SECRET
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: http
+      periodSeconds: 15
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
 
-  pdf-db:
+  # The metadata and pdf databases. Its data is a hostPath on the node
+  # labelled govtool-pdf-db=true, so it runs there, one process at a time.
+  postgres:
     enabled: true
     replicaCount: 1
+    strategy:
+      type: Recreate
     image:
       repository: postgres
       tag: 16-alpine
     containerPort: 5432
     servicePort: 5432
-    envFromSecrets:
-      - govtool-pdf-db
+    env:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     nodeSelector:
       govtool-pdf-db: "true"
     volume:
@@ -99,30 +176,20 @@ services:
       type: hostPath
       name: db-data
       mountPath: /var/lib/postgresql/data
-      hostPath: /var/lib/govtool/pdf-postgres
-      
+      hostPath: /var/lib/govtool/v3-postgres
+    secretMounts:
+      - name: db-passwords
+        secretName: govtool-v3-db
+        mountPath: /run/secrets
+    configMapMounts:
+      - name: init
+        configMapName: govtool-postgres-init
+        mountPath: /docker-entrypoint-initdb.d
+    readinessProbe:
+      exec:
+        command: ["pg_isready", "-U", "postgres"]
+      periodSeconds: 10
 
-  pdf:
-    enabled: true
-    replicaCount: 1
-    image:
-      repository: ghcr.io/intersectmbo/govtool-proposal-pillar-backend
-      tag: dev-0c26f0741ddfb29ed3d5436afede9962f6e72bfc-385
-    containerPort: 1337
-    servicePort: 80
-    env:
-      DATABASE_NAME: "postgres"
-      DATABASE_HOST: "govtool-pdf-db"
-      DATABASE_PORT: "5432"
-      DATABASE_CLIENT: "postgres"
-      DATABASE_SSL: "false"
-      GOVTOOL_API_BASE_URL: "http://govtool-backend"
-      NODE_ENV: "production"
-      POSTGRESQL_REPLICATION_USE_PASSFILE: ""
-      REFRESH_TOKEN_EXPIRES: 30d
-      JWT_SECRET_EXPIRES: 15m
-    envFromSecrets: 
-       - govtool-pdf-env
 resources:
   default:
     requests:
@@ -141,17 +208,14 @@ ingress:
   hosts:
     - host: k8s.dev.gov.tools
       paths:
-        - path: /api/metadata(/|$)(.*)
-          service: metadata
-          port: 80
-        - path: /api/outcomes(/|$)(.*)
-          service: outcomes
-          port: 80
-        - path: /api/pdf(/|$)(.*)
-          service: pdf
-          port: 80
         - path: /api(/|$)(.*)
           service: backend
+          port: 80
+        - path: /()(swagger-ui.*)
+          service: backend
+          port: 80
+        - path: /pdf(/|$)(.*)
+          service: pdf
           port: 80
         - path: /()(.*)
           service: frontend

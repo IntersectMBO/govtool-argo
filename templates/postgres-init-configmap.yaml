@@ -1,0 +1,12 @@
+{{- if .Values.services.postgres.enabled }}
+# Creates the metadata and pdf roles and databases when the postgres data
+# directory is empty (the image runs /docker-entrypoint-initdb.d once).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "govtool.serviceName" (dict "root" $ "name" "postgres-init") }}
+  namespace: {{ .Values.global.namespace }}
+data:
+  10-app-databases.sh: |
+{{ .Files.Get "files/postgres-init.sh" | indent 4 }}
+{{- end }}
