@@ -60,7 +60,9 @@ services:
     replicaCount: 1
     image:
       repository: ghcr.io/intersectmbo/govtool-frontend
-      tag: 61d5d1c73b04f0bbed31df932df81f8e0fe5d013
+      # Ahead of the other images: develop be8ed30 only rebuilt the frontend
+      # (nginx 1.30).
+      tag: be8ed30aef5ce8c5b4f11aad77416e92dcac38ab
     containerPort: 80
     servicePort: 80
     # Read at container start into window.__ENV__.
