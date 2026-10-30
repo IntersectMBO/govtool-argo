@@ -6,13 +6,13 @@
 services:
   backend:
     image:
-      tag: be8ed30aef5ce8c5b4f11aad77416e92dcac38ab
+      tag: 34bf94d5c56e701135c0418cd7a3e483810d7b37
   frontend:
     image:
-      tag: be8ed30aef5ce8c5b4f11aad77416e92dcac38ab
+      tag: 34bf94d5c56e701135c0418cd7a3e483810d7b37
   metadata:
     image:
-      tag: be8ed30aef5ce8c5b4f11aad77416e92dcac38ab
+      tag: 34bf94d5c56e701135c0418cd7a3e483810d7b37
   pdf:
     image:
-      tag: be8ed30aef5ce8c5b4f11aad77416e92dcac38ab
+      tag: 34bf94d5c56e701135c0418cd7a3e483810d7b37
