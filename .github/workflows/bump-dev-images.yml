@@ -1,18 +1,5 @@
 name: Bump dev images
 
-# Points dev (values-dev.yaml, k8s.dev.gov.tools) at an IntersectMBO/govtool
-# develop commit through a pull request; merging it is the deploy.
-#
-# Triggers:
-#   repository_dispatch bump-dev-images: sent by IntersectMBO/govtool's
-#     build-docker-images workflow once develop's images are on GHCR, with
-#     client_payload.sha.
-#   workflow_dispatch: by hand. Leave tag empty to follow develop, or give a
-#     develop commit SHA to pin dev to it (also how to roll back).
-#   schedule: once a day, follows develop in case a dispatch was missed.
-#
-# The PR branch is reused, so at most one bump PR is open at a time.
-
 on:
   repository_dispatch:
     types: [bump-dev-images]
@@ -131,6 +118,7 @@ jobs:
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Open or update the bump pull request
+        id: pr
         if: steps.bump.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
@@ -147,4 +135,13 @@ jobs:
             Changes since what dev runs now:
             https://github.com/IntersectMBO/govtool/compare/${{ steps.pick.outputs.from }}...${{ steps.pick.outputs.sha }}
 
-            Merging this deploys it to k8s.dev.gov.tools.
+            The workflow merges this itself; the merge deploys it to
+            k8s.dev.gov.tools.
+
+      # If this fails, the PR stays open: need to merge it :)
+      - name: Merge it
+        if: steps.pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.pr.outputs.pull-request-number }}
+        run: gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --squash --delete-branch
