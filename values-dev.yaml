@@ -1,0 +1,18 @@
+# Dev (k8s.dev.gov.tools), loaded on top of values.yaml. The keys are the
+# chart's service names; each one's image is its repository in values.yaml
+# (metadata = govtool-metadata-service, pdf = govtool-pdf-backend). The tags
+# are moved by .github/workflows/bump-dev-images.yml, which sets all four to
+# one IntersectMBO/govtool develop commit.
+services:
+  backend:
+    image:
+      tag: 61d5d1c73b04f0bbed31df932df81f8e0fe5d013
+  frontend:
+    image:
+      tag: be8ed30aef5ce8c5b4f11aad77416e92dcac38ab
+  metadata:
+    image:
+      tag: 61d5d1c73b04f0bbed31df932df81f8e0fe5d013
+  pdf:
+    image:
+      tag: 61d5d1c73b04f0bbed31df932df81f8e0fe5d013

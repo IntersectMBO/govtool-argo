@@ -11,6 +11,8 @@ spec:
     path: .
     helm:
       releaseName: govtool
+      valueFiles:
+        - values-dev.yaml
   destination:
     server: https://kubernetes.default.svc
     namespace: govtool
