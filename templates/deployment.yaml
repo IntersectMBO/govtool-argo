@@ -11,6 +11,10 @@ metadata:
     app.kubernetes.io/component: {{ $name }}
 spec:
   replicas: {{ default 1 $svc.replicaCount }}
+  {{- with $svc.strategy }}
+  strategy:
+{{ toYaml . | indent 4 }}
+  {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "govtool.name" $ }}
@@ -21,13 +25,16 @@ spec:
         app.kubernetes.io/name: {{ include "govtool.name" $ }}
         app.kubernetes.io/component: {{ $name }}
     spec:
+      # No service needs the Kubernetes API, and the token's mount under
+      # /run/secrets would collide with secretMounts there.
+      automountServiceAccountToken: false
       {{- with $svc.nodeSelector }}
       nodeSelector:
 {{ toYaml . | indent 8 }}
       {{- end }}
       containers:
         - name: {{ $name }}
-          image: "{{ $svc.image.repository }}:{{ $svc.image.tag }}"
+          image: "{{ $svc.image.repository }}:{{ required (printf "services.%s.image.tag is not set" $name) $svc.image.tag }}"
           imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
           {{- with $svc.command }}
           command:
@@ -40,11 +47,18 @@ spec:
           ports:
             - name: http
               containerPort: {{ $svc.containerPort }}
-          {{- with $svc.env }}
+          {{- if or $svc.env $svc.secretEnv }}
           env:
-            {{- range $key, $value := . }}
+            {{- range $key, $value := $svc.env }}
             - name: {{ $key }}
               value: {{ tpl ($value | toString) $ | quote }}
+            {{- end }}
+            {{- range $svc.secretEnv }}
+            - name: {{ .name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secret }}
+                  key: {{ .key }}
             {{- end }}
           {{- end }}
           {{- with $svc.envFromSecrets }}
@@ -54,9 +68,13 @@ spec:
                 name: {{ . }}
             {{- end }}
           {{- end }}
+          {{- with $svc.readinessProbe }}
+          readinessProbe:
+{{ toYaml . | indent 12 }}
+          {{- end }}
           resources:
-{{ toYaml $.Values.resources.default | indent 12 }}
-          {{- if or (and $svc.configMount $svc.configMount.enabled) (and $svc.volume $svc.volume.enabled) }}
+{{ toYaml (default $.Values.resources.default $svc.resources) | indent 12 }}
+          {{- if or (and $svc.configMount $svc.configMount.enabled) (and $svc.volume $svc.volume.enabled) $svc.secretMounts $svc.configMapMounts }}
           volumeMounts:
             {{- if and $svc.configMount $svc.configMount.enabled }}
             - name: config
@@ -68,8 +86,18 @@ spec:
             - name: {{ $svc.volume.name }}
               mountPath: {{ $svc.volume.mountPath }}
             {{- end }}
+            {{- range $svc.secretMounts }}
+            - name: {{ .name }}
+              mountPath: {{ .mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- range $svc.configMapMounts }}
+            - name: {{ .name }}
+              mountPath: {{ .mountPath }}
+              readOnly: true
+            {{- end }}
           {{- end }}
-      {{- if or (and $svc.configMount $svc.configMount.enabled) (and $svc.volume $svc.volume.enabled) }}
+      {{- if or (and $svc.configMount $svc.configMount.enabled) (and $svc.volume $svc.volume.enabled) $svc.secretMounts $svc.configMapMounts }}
       volumes:
         {{- if and $svc.configMount $svc.configMount.enabled }}
         - name: config
@@ -81,6 +109,17 @@ spec:
           hostPath:
             path: {{ $svc.volume.hostPath }}
             type: DirectoryOrCreate
+        {{- end }}
+        {{- range $svc.secretMounts }}
+        - name: {{ .name }}
+          secret:
+            secretName: {{ .secretName }}
+        {{- end }}
+        {{- range $svc.configMapMounts }}
+        - name: {{ .name }}
+          configMap:
+            name: {{ .configMapName }}
+            defaultMode: 0755
         {{- end }}
       {{- end }}
 {{- end }}

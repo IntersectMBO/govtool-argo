@@ -1,0 +1,94 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: govtool-pr-previews
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=error
+  generators:
+    - git:
+        repoURL: https://github.com/cardanoapi/govtool-argo.git
+        revision: main
+        requeueAfterSeconds: 30
+        files:
+          - path: previews/pr-*.yaml
+  template:
+    metadata:
+      name: "govtool-pr-{{ .pr_number }}"
+      annotations:
+        govtool.io/built-commit: "{{ .head_sha }}"
+      labels:
+        app.kubernetes.io/part-of: govtool
+        govtool.io/environment: preview
+        govtool.io/pr-number: "{{ .pr_number }}"
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/cardanoapi/govtool-argo.git
+        targetRevision: main
+        path: .
+        helm:
+          releaseName: "govtool-pr-{{ .pr_number }}"
+          values: |
+            # A preview needs the Secrets govtool-v3-app and govtool-v3-db in
+            # its namespace (see values.yaml), created before its file is added.
+            global:
+              namespace: "govtool-pr-{{ .pr_number }}"
+              imagePullPolicy: IfNotPresent
+
+            services:
+              backend:
+                image:
+                  tag: "{{ .head_sha }}"
+              frontend:
+                image:
+                  tag: "{{ .head_sha }}"
+                env:
+                  VITE_BASE_URL: "https://{{ .host }}/api"
+                  VITE_PDF_API_URL: "https://{{ .host }}/pdf"
+              metadata:
+                image:
+                  tag: "{{ .head_sha }}"
+              pdf:
+                image:
+                  tag: "{{ .head_sha }}"
+                env:
+                  CORS_ORIGINS: "https://{{ .host }}"
+              postgres:
+                volume:
+                  hostPath: "/var/lib/govtool/pr-{{ .pr_number }}-postgres"
+
+            ingress:
+              enabled: true
+              className: nginx
+              tls:
+                enabled: false
+              hosts:
+                - host: "{{ .host }}"
+                  paths:
+                    - path: /api(/|$)(.*)
+                      service: backend
+                      port: 80
+                    - path: /()(swagger-ui.*)
+                      service: backend
+                      port: 80
+                    - path: /pdf(/|$)(.*)
+                      service: pdf
+                      port: 80
+                    - path: /()(.*)
+                      service: frontend
+                      port: 80
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "govtool-pr-{{ .pr_number }}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+  syncPolicy:
+    preserveResourcesOnDeletion: false

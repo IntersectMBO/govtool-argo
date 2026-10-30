@@ -1,3 +1,5 @@
 secrets/*.yaml
 !secrets/*.example.yaml
 !secrets/.gitkeep
+.DS_Store
+rendered.yaml
