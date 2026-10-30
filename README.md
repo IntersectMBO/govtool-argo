@@ -53,6 +53,27 @@ Ingress class: nginx
 
 Argo CD is installed in the `argocd` namespace and manages the GovTool deployment from GitHub.
 
+Everything Argo CD runs is defined under `argocd/` (app of apps):
+
+```txt
+argocd/
+  bootstrap/root.yaml               applied once by hand; syncs the rest of argocd/
+  apps/govtool.yaml                 the govtool Application (this chart, namespace govtool)
+  appsets/govtool-pr-previews.yaml  one Application per previews/pr-*.yaml
+  config/argocd-ingress.yaml        Argo CD's own ingress (argo.dev.gov.tools)
+```
+
+To change an Application, the preview ApplicationSet or Argo CD's config, edit
+the file and merge to main; root applies it and reverts edits made by hand.
+Root does not prune: a file removed from `argocd/` leaves its object in the
+cluster until it is deleted on purpose.
+
+Bootstrap a new cluster (once, after installing Argo CD):
+
+```bash
+kubectl apply -f argocd/bootstrap/root.yaml
+```
+
 ## Helm Chart
 
 The Helm chart defines:

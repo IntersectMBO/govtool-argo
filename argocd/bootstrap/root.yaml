@@ -1,0 +1,28 @@
+# The one object applied by hand (kubectl apply -f argocd/bootstrap/root.yaml).
+# It syncs everything else under argocd/ from Git: Applications, the preview
+# ApplicationSet and Argo CD's own config. bootstrap/ is excluded so root does
+# not manage itself.
+#
+# prune is off: deleting a file under argocd/ leaves its object in the cluster
+# until it is removed on purpose, so a bad commit cannot delete an Application.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/cardanoapi/govtool-argo.git
+    targetRevision: main
+    path: argocd
+    directory:
+      recurse: true
+      exclude: "bootstrap/*"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
