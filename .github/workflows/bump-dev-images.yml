@@ -1,0 +1,150 @@
+name: Bump dev images
+
+# Points dev (values-dev.yaml, k8s.dev.gov.tools) at an IntersectMBO/govtool
+# develop commit through a pull request; merging it is the deploy.
+#
+# Triggers:
+#   repository_dispatch bump-dev-images: sent by IntersectMBO/govtool's
+#     build-docker-images workflow once develop's images are on GHCR, with
+#     client_payload.sha.
+#   workflow_dispatch: by hand. Leave tag empty to follow develop, or give a
+#     develop commit SHA to pin dev to it (also how to roll back).
+#   schedule: once a day, follows develop in case a dispatch was missed.
+#
+# The PR branch is reused, so at most one bump PR is open at a time.
+
+on:
+  repository_dispatch:
+    types: [bump-dev-images]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "develop commit SHA to deploy (empty: develop's latest)"
+        required: false
+        type: string
+  schedule:
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: bump-dev-images
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Pick the commit and check its images
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          DISPATCH_SHA: ${{ github.event.client_payload.sha }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            repository_dispatch) sha="$DISPATCH_SHA" ;;
+            workflow_dispatch) sha="${INPUT_TAG:-}" ;;
+            *) sha="" ;;
+          esac
+          if [ -z "$sha" ]; then
+            sha=$(gh api repos/IntersectMBO/govtool/commits/develop --jq .sha)
+          fi
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "'$sha' is not a full commit SHA" >&2
+            exit 1
+          fi
+
+          # Only develop's history goes to dev, not a PR or another branch.
+          status=$(gh api "repos/IntersectMBO/govtool/compare/$sha...develop" --jq .status)
+          if [ "$status" != ahead ] && [ "$status" != identical ]; then
+            echo "$sha is not on IntersectMBO/govtool develop ($status)" >&2
+            exit 1
+          fi
+
+          # Automatic runs never move dev back; a manual run may (rollback).
+          current=$(yq '.services.backend.image.tag' values-dev.yaml)
+          if [ "$EVENT" != workflow_dispatch ] && [ "$current" != "$sha" ]; then
+            status=$(gh api "repos/IntersectMBO/govtool/compare/$current...$sha" --jq .status)
+            if [ "$status" = behind ]; then
+              echo "$sha is older than dev's $current, skipping"
+              exit 0
+            fi
+          fi
+
+          # Check the exact images dev will pull: every service in values-dev.yaml,
+          # with its repository from values.yaml.
+          for svc in $(yq '.services | keys | .[]' values-dev.yaml); do
+            repo=$(yq ".services.$svc.image.repository" values.yaml)
+            case "$repo" in
+              ghcr.io/*) image=${repo#ghcr.io/} ;;
+              *) echo "services.$svc.image.repository is '$repo', not on ghcr.io" >&2; exit 1 ;;
+            esac
+            token=$(curl -fsS "https://ghcr.io/token?scope=repository:$image:pull" | jq -r .token)
+            code=$(curl -s -o /dev/null -w '%{http_code}' -I \
+              -H "Authorization: Bearer $token" \
+              -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
+              "https://ghcr.io/v2/$image/manifests/$sha")
+            if [ "$code" != 200 ]; then
+              if [ "$EVENT" = schedule ]; then
+                echo "$repo:$sha is not on GHCR yet (HTTP $code); trying again tomorrow"
+                exit 0
+              fi
+              echo "$repo:$sha is not on GHCR (HTTP $code)" >&2
+              exit 1
+            fi
+          done
+
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "from=$current" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Point values-dev.yaml at it
+        id: bump
+        if: steps.pick.outputs.sha != ''
+        env:
+          NEW: ${{ steps.pick.outputs.sha }}
+        run: |
+          set -euo pipefail
+          for svc in $(yq '.services | keys | .[]' values-dev.yaml); do
+            old=$(yq ".services.$svc.image.tag" values-dev.yaml)
+            if [ "$old" = "$NEW" ]; then continue; fi
+            if ! [[ "$old" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "services.$svc.image.tag is '$old', not a commit SHA; not touching it" >&2
+              exit 1
+            fi
+            # Replace the SHA as text so the comments and layout stay as they are.
+            sed -i "s/$old/$NEW/g" values-dev.yaml
+          done
+          for svc in $(yq '.services | keys | .[]' values-dev.yaml); do
+            test "$(yq ".services.$svc.image.tag" values-dev.yaml)" = "$NEW"
+          done
+          if git diff --quiet; then
+            echo "dev is already at $NEW"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the bump pull request
+        if: steps.bump.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: bot/bump-dev-images
+          delete-branch: true
+          add-paths: values-dev.yaml
+          author: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          commit-message: "chore(dev): bump govtool images to ${{ steps.pick.outputs.short }}"
+          title: "chore(dev): bump govtool images to ${{ steps.pick.outputs.short }}"
+          body: |
+            Points every service in values-dev.yaml at IntersectMBO/govtool
+            develop `${{ steps.pick.outputs.sha }}` (trigger: `${{ github.event_name }}`).
+
+            Changes since what dev runs now:
+            https://github.com/IntersectMBO/govtool/compare/${{ steps.pick.outputs.from }}...${{ steps.pick.outputs.sha }}
+
+            Merging this deploys it to k8s.dev.gov.tools.

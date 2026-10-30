@@ -34,7 +34,7 @@ spec:
       {{- end }}
       containers:
         - name: {{ $name }}
-          image: "{{ $svc.image.repository }}:{{ $svc.image.tag }}"
+          image: "{{ $svc.image.repository }}:{{ required (printf "services.%s.image.tag is not set" $name) $svc.image.tag }}"
           imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
           {{- with $svc.command }}
           command:

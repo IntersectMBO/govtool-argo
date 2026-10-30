@@ -3,7 +3,8 @@ global:
   imagePullPolicy: IfNotPresent
 
 # GovTool v3: the same services as docker/swarm-stack/docker-stack.yml in
-# IntersectMBO/govtool. All four app images share one tag.
+# IntersectMBO/govtool. The app image tags are set per environment
+# (values-dev.yaml; previews set their own).
 #
 # Secrets, created in the namespace out of band (never in git):
 #   govtool-v3-app: GOVTOOL_DBSYNC_PASSWORD, METADATA_DATABASE_URL,
@@ -17,7 +18,6 @@ services:
     replicaCount: 1
     image:
       repository: ghcr.io/intersectmbo/govtool-backend
-      tag: 61d5d1c73b04f0bbed31df932df81f8e0fe5d013
     containerPort: 9999
     servicePort: 80
     command: ["node", "dist/main.js"]
@@ -60,9 +60,6 @@ services:
     replicaCount: 1
     image:
       repository: ghcr.io/intersectmbo/govtool-frontend
-      # Ahead of the other images: develop be8ed30 only rebuilt the frontend
-      # (nginx 1.30).
-      tag: be8ed30aef5ce8c5b4f11aad77416e92dcac38ab
     containerPort: 80
     servicePort: 80
     # Read at container start into window.__ENV__.
@@ -90,7 +87,6 @@ services:
     replicaCount: 1
     image:
       repository: ghcr.io/intersectmbo/govtool-metadata-service
-      tag: 61d5d1c73b04f0bbed31df932df81f8e0fe5d013
     containerPort: 3000
     servicePort: 80
     env:
@@ -119,7 +115,6 @@ services:
     replicaCount: 1
     image:
       repository: ghcr.io/intersectmbo/govtool-pdf-backend
-      tag: 61d5d1c73b04f0bbed31df932df81f8e0fe5d013
     containerPort: 1337
     servicePort: 80
     env:
